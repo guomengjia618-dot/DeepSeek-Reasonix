@@ -35,6 +35,8 @@ jobs:
   deploy:
     if: github.event_name == 'push' || inputs.firebase_data_action == 'none'
     runs-on: ubuntu-latest
+    outputs:
+      cloudflare_configured: ${{ steps.secret-check.outputs.configured }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -48,17 +50,34 @@ jobs:
           npm ci
           npm run typecheck
           npm test
+      # Without the token every wrangler step below fails; skip them cleanly
+      # (Validate above still gates the push) until the secret is configured.
+      - id: secret-check
+        name: Check Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "CLOUDFLARE_API_TOKEN repo secret is not set; skipping Cloudflare deploy steps."
+            echo "Configure it (Cloudflare dashboard -> API Tokens) and re-run to deploy."
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Apply and verify diagnostics v2 D1 migration
+        if: steps.secret-check.outputs.configured == 'true'
         working-directory: workers/crash-report
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: npm run migrate:diagnostics-v2
       - name: Apply and verify Firebase crash D1 migration
+        if: steps.secret-check.outputs.configured == 'true'
         working-directory: workers/crash-report
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: npm run migrate:firebase-crash
       - name: Sync Firebase crash secrets
+        if: steps.secret-check.outputs.configured == 'true'
         working-directory: workers/crash-report
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -76,6 +95,7 @@ jobs:
           fi
           node -e 'process.stdout.write(JSON.stringify({FIREBASE_DATABASE_URL:process.env.FIREBASE_DATABASE_URL||null,FIREBASE_CLIENT_EMAIL:process.env.FIREBASE_CLIENT_EMAIL||null,FIREBASE_PRIVATE_KEY:process.env.FIREBASE_PRIVATE_KEY||null}))' | npx wrangler secret bulk
       - name: Deploy
+        if: steps.secret-check.outputs.configured == 'true'
         working-directory: workers/crash-report
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -86,6 +106,7 @@ jobs:
       # nobody needs local Cloudflare credentials; when the repo secret is
       # unset the sentinel stays log-only.
       - name: Sync alert webhook secret
+        if: steps.secret-check.outputs.configured == 'true'
         working-directory: workers/crash-report
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

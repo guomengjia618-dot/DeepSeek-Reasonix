@@ -403,12 +403,26 @@ try {
     previousDownwardTop = position.top;
     await page.waitForTimeout(stalled ? 220 : 16);
   }
-  await page.waitForFunction(() => {
-    const element = document.querySelector(".transcript");
-    return element instanceof HTMLElement
-      && element.dataset.scrollMode === "tail-follow"
-      && element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
-  });
+  // A slow or input-coalescing runner can end the burst above with the
+  // scrollport at the physical tail while the app never observed a downward
+  // intent burst, leaving scrollMode stuck before "tail-follow". Keep sending
+  // human-paced wheel turns (the 180ms idle lease restarts a burst) until the
+  // mode engages instead of failing blind.
+  let tailFollowEngaged = false;
+  for (let attempt = 0; attempt < 32 && !tailFollowEngaged; attempt += 1) {
+    tailFollowEngaged = await page.waitForFunction(() => {
+      const element = document.querySelector(".transcript");
+      return element instanceof HTMLElement
+        && element.dataset.scrollMode === "tail-follow"
+        && element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
+    }, undefined, { timeout: 1_000 }).then(() => true).catch(() => false);
+    if (!tailFollowEngaged) {
+      await moveToOuterReaderGutter(page, hydrationTranscript, false);
+      await page.mouse.wheel(0, 240);
+      await page.waitForTimeout(220);
+    }
+  }
+  assert(tailFollowEngaged, "settled at-bottom scroll engages tail-follow mode");
   // Rapid A→B→A switches reproduce the report where a callback from the
   // previous session landed on the newly mounted scrollport. The last topic
   // owns the surface and opens at its physical tail.
